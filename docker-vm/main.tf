@@ -46,59 +46,92 @@ resource "google_compute_instance" "docker_builder_vm" {
 
   metadata_startup_script = <<-EOF
     #!/bin/bash
+
     # Explicitly define the user to add to the docker group.
-    # This user is typically the one created by gcloud compute ssh.
-    # Replace 'user' with the actual username you use for SSH.
-    USER_TO_ADD="user"
+    USER_TO_ADD="fcoatti"
+
+    # Flag file to indicate if initial setup has been completed
+    SETUP_COMPLETE_FLAG="/var/lib/startup_script_initial_setup_complete"
 
     # --- Debugging lines (optional, for verification) ---
-    echo "Startup script: Attempting to add user $${USER_TO_ADD} to docker group." | sudo tee /var/log/startup_script_docker_group_debug.log
-    # ----------------------------------------------------
+    echo "Startup script started at $(date)." | sudo tee -a /var/log/startup_script_debug.log
 
-    # Install Docker
-    sudo apt-get update
-    sudo apt-get install -y ca-certificates curl gnupg lsb-release
+    # Check if the initial setup has already been performed
+    if [ ! -f "$SETUP_COMPLETE_FLAG" ]; then
+        echo "Performing initial setup..." | sudo tee -a /var/log/startup_script_debug.log
 
-    # Add Docker's official GPG key
-    sudo mkdir -m 0755 -p /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+        # Install Docker
+        sudo apt-get update
+        sudo apt-get install -y ca-certificates curl gnupg lsb-release
 
-    # Set up the stable repository
-    echo \
-      "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
-      $(lsb_release -cs) stable" | sudo tee -a /etc/apt/sources.list.d/docker.list > /dev/null
-    sudo apt-get update
-    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    sudo apt-get install -y make
+        # Add Docker's official GPG key
+        sudo mkdir -m 0755 -p /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+        # Set up the stable repository
+        echo \
+          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+          $(lsb_release -cs) stable" | sudo tee -a /etc/apt/sources.list.d/docker.list > /dev/null
+        sudo apt-get update
+        sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+        sudo apt-get install -y make
+
+        # NEW: Install gcloud CLI for Artifact Registry authentication
+        echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+        curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+        sudo apt-get update
+        sudo apt-get install -y google-cloud-cli
+
+        # Enable Docker service (only needs to be done once to ensure it starts on subsequent boots)
+        sudo systemctl enable docker
+
+        # Create the flag file to prevent re-running initial setup
+        sudo touch "$SETUP_COMPLETE_FLAG"
+        echo "Initial setup completed and flag set." | sudo tee -a /var/log/startup_script_debug.log
+    else
+        echo "Initial setup already completed. Skipping package installations." | sudo tee -a /var/log/startup_script_debug.log
+    fi
+
+    # --- Operations that might need to run on every boot, or specifically handle user creation ---
+
+    # Ensure Docker service is running (in case it crashed or was stopped manually)
+    # This is generally harmless and good practice for a service you expect to be available.
+    sudo systemctl start docker
+    echo "Docker service ensured to be running." | sudo tee -a /var/log/startup_script_debug.log
+
 
     # Add the determined user to the docker group
-    # Check if docker group exists before adding (docker-ce install usually creates it)
+    # This block handles user addition on every boot, in case the user isn't present initially
+    # or if a new user is added later (less common in startup scripts).
+    # The cron job fallback is still useful if the user truly doesn't exist at boot time.
+
+    echo "Attempting to add user ${USER_TO_ADD} to docker group." | sudo tee -a /var/log/startup_script_debug.log
     if ! getent group docker > /dev/null; then
         sudo groupadd docker
+        echo "Docker group created." | sudo tee -a /var/log/startup_script_debug.log
     fi
-    # Check if the user exists before adding them to the group
-    if id "$${USER_TO_ADD}" &>/dev/null; then
-        sudo usermod -aG docker "$${USER_TO_ADD}"
-        echo "Startup script: User $${USER_TO_ADD} added to docker group." | sudo tee -a /var/log/startup_script_docker_group_debug.log
+
+    if id "${USER_TO_ADD}" &>/dev/null; then
+        # Check if user is already in docker group to avoid redundant operations
+        if ! id -nG "${USER_TO_ADD}" | grep -qw "docker"; then
+            sudo usermod -aG docker "${USER_TO_ADD}"
+            echo "User ${USER_TO_ADD} added to docker group." | sudo tee -a /var/log/startup_script_debug.log
+        else
+            echo "User ${USER_TO_ADD} is already in the docker group." | sudo tee -a /var/log/startup_script_debug.log
+        fi
     else
-        echo "Startup script: Warning: User $${USER_TO_ADD} does not exist yet. Cannot add to docker group. It might be created later by gcloud SSH or via a cron job." | sudo tee -a /var/log/startup_script_docker_group_debug.log
-        # As a fallback for cases where user might not exist yet,
-        # schedule a cron job to add them to docker group on next reboot
-        (crontab -l 2>/dev/null; echo "@reboot sleep 60 && /usr/bin/sudo /usr/sbin/usermod -aG docker $${USER_TO_ADD} >/dev/null 2>&1") | crontab -
+        echo "Warning: User ${USER_TO_ADD} does not exist yet. Cannot add to docker group directly." | sudo tee -a /var/log/startup_script_debug.log
+        # Fallback to cron job: ensures user is added if created later
+        # Check if the cron job already exists to avoid duplication
+        if ! (crontab -l 2>/dev/null | grep -q "@reboot .*usermod -aG docker ${USER_TO_ADD}"); then
+            (crontab -l 2>/dev/null; echo "@reboot sleep 60 && /usr/bin/sudo /usr/sbin/usermod -aG docker ${USER_TO_ADD} >/dev/null 2>&1") | crontab -
+            echo "Cron job scheduled for ${USER_TO_ADD} to be added to docker group on next reboot." | sudo tee -a /var/log/startup_script_debug.log
+        else
+            echo "Cron job for ${USER_TO_ADD} already exists." | sudo tee -a /var/log/startup_script_debug.log
+        fi
     fi
 
-    # Enable and start Docker service
-    sudo systemctl enable docker
-    sudo systemctl start docker
-
-    # NEW: Install gcloud CLI for Artifact Registry authentication
-    # This block assumes a Debian/Ubuntu-like OS. Adjust for other distributions.
-    echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
-    curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
-    sudo apt-get update
-    sudo apt-get install -y google-cloud-cli
-
-    echo "Startup script finished."
+    echo "Startup script finished at $(date)." | sudo tee -a /var/log/startup_script_debug.log
   EOF
 
   service_account {

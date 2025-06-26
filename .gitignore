@@ -1,4 +1,4 @@
-docker-vm/.terraform
-docker-vm/.terraform.lock.hcl
-docker-vm/terraform.tfstate
-docker-vm/terraform.tfstate.backup
+**/.terraform
+**/terraform.tfstate
+**/terraform.tfstate.backup
+**/terraform.tfvars
