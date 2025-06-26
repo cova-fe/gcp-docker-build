@@ -105,29 +105,29 @@ resource "google_compute_instance" "docker_builder_vm" {
     # or if a new user is added later (less common in startup scripts).
     # The cron job fallback is still useful if the user truly doesn't exist at boot time.
 
-    echo "Attempting to add user ${USER_TO_ADD} to docker group." | sudo tee -a /var/log/startup_script_debug.log
+    echo "Attempting to add user $${USER_TO_ADD} to docker group." | sudo tee -a /var/log/startup_script_debug.log
     if ! getent group docker > /dev/null; then
         sudo groupadd docker
         echo "Docker group created." | sudo tee -a /var/log/startup_script_debug.log
     fi
 
-    if id "${USER_TO_ADD}" &>/dev/null; then
+    if id "$${USER_TO_ADD}" &>/dev/null; then
         # Check if user is already in docker group to avoid redundant operations
-        if ! id -nG "${USER_TO_ADD}" | grep -qw "docker"; then
-            sudo usermod -aG docker "${USER_TO_ADD}"
-            echo "User ${USER_TO_ADD} added to docker group." | sudo tee -a /var/log/startup_script_debug.log
+        if ! id -nG "$${USER_TO_ADD}" | grep -qw "docker"; then
+            sudo usermod -aG docker "$${USER_TO_ADD}"
+            echo "User $${USER_TO_ADD} added to docker group." | sudo tee -a /var/log/startup_script_debug.log
         else
-            echo "User ${USER_TO_ADD} is already in the docker group." | sudo tee -a /var/log/startup_script_debug.log
+            echo "User $${USER_TO_ADD} is already in the docker group." | sudo tee -a /var/log/startup_script_debug.log
         fi
     else
-        echo "Warning: User ${USER_TO_ADD} does not exist yet. Cannot add to docker group directly." | sudo tee -a /var/log/startup_script_debug.log
+        echo "Warning: User $${USER_TO_ADD} does not exist yet. Cannot add to docker group directly." | sudo tee -a /var/log/startup_script_debug.log
         # Fallback to cron job: ensures user is added if created later
         # Check if the cron job already exists to avoid duplication
-        if ! (crontab -l 2>/dev/null | grep -q "@reboot .*usermod -aG docker ${USER_TO_ADD}"); then
-            (crontab -l 2>/dev/null; echo "@reboot sleep 60 && /usr/bin/sudo /usr/sbin/usermod -aG docker ${USER_TO_ADD} >/dev/null 2>&1") | crontab -
-            echo "Cron job scheduled for ${USER_TO_ADD} to be added to docker group on next reboot." | sudo tee -a /var/log/startup_script_debug.log
+        if ! (crontab -l 2>/dev/null | grep -q "@reboot .*usermod -aG docker $${USER_TO_ADD}"); then
+            (crontab -l 2>/dev/null; echo "@reboot sleep 60 && /usr/bin/sudo /usr/sbin/usermod -aG docker $${USER_TO_ADD} >/dev/null 2>&1") | crontab -
+            echo "Cron job scheduled for $${USER_TO_ADD} to be added to docker group on next reboot." | sudo tee -a /var/log/startup_script_debug.log
         else
-            echo "Cron job for ${USER_TO_ADD} already exists." | sudo tee -a /var/log/startup_script_debug.log
+            echo "Cron job for $${USER_TO_ADD} already exists." | sudo tee -a /var/log/startup_script_debug.log
         fi
     fi
 
