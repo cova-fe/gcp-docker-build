@@ -34,7 +34,7 @@ resource "google_compute_instance" "docker_builder_vm" {
   boot_disk {
     initialize_params {
       image = var.vm_image
-      size  = 50 # Increase disk size for Docker images if needed
+      size  = 20 # Increase disk size for Docker images if needed
     }
   }
 
